@@ -55,8 +55,8 @@ class LedgerBridgeKeyring extends EventEmitter {
     this.implementFullBIP44 = opts.implementFullBIP44 || false
 
     // Remove accounts that don't have corresponding account details
-    this.accounts = this.accounts
-      .filter((account) => Object.keys(this.accountDetails).includes(ethUtil.toChecksumAddress(account)))
+    // this.accounts = this.accounts
+    //   .filter((account) => Object.keys(this.accountDetails).includes(ethUtil.toChecksumAddress(account)))
 
     return Promise.resolve()
   }
