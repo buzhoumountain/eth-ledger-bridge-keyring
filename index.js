@@ -48,9 +48,9 @@ class LedgerBridgeKeyring extends EventEmitter {
     this.bridgeUrl = opts.bridgeUrl || BRIDGE_URL
     this.accounts = opts.accounts || []
     this.accountDetails = opts.accountDetails || {}
-    if (!opts.accountDetails) {
-      this._migrateAccountDetails(opts)
-    }
+    // if (!opts.accountDetails) {
+    //   this._migrateAccountDetails(opts)
+    // }
 
     this.implementFullBIP44 = opts.implementFullBIP44 || false
 
