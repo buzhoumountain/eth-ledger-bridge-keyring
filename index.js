@@ -3,7 +3,7 @@ const HDKey = require('hdkey')
 const ethUtil = require('ethereumjs-util')
 const sigUtil = require('eth-sig-util')
 
-const hdPathString = `m/44'/5718350'/0'`
+const hdPathString = `m/44'/60'/0'`
 const type = 'Ledger Hardware'
 const BRIDGE_URL = 'https://codeoneline.github.io/eth-ledger-bridge-keyring'
 const pathBase = 'm'
@@ -48,15 +48,15 @@ class LedgerBridgeKeyring extends EventEmitter {
     this.bridgeUrl = opts.bridgeUrl || BRIDGE_URL
     this.accounts = opts.accounts || []
     this.accountDetails = opts.accountDetails || {}
-    // if (!opts.accountDetails) {
-    //   this._migrateAccountDetails(opts)
-    // }
+    if (!opts.accountDetails) {
+      // this._migrateAccountDetails(opts)
+    }
 
     this.implementFullBIP44 = opts.implementFullBIP44 || false
 
     // Remove accounts that don't have corresponding account details
-    // this.accounts = this.accounts
-    //   .filter((account) => Object.keys(this.accountDetails).includes(ethUtil.toChecksumAddress(account)))
+    this.accounts = this.accounts
+      .filter((account) => Object.keys(this.accountDetails).includes(ethUtil.toChecksumAddress(account)))
 
     return Promise.resolve()
   }
@@ -439,11 +439,11 @@ class LedgerBridgeKeyring extends EventEmitter {
 
   _getPathForIndex (index) {
     // Check if the path is BIP 44 (Ledger Live)
-    return this._isLedgerLiveHdPath() ? `m/44'/5718350'/${index}'/0/0` : `${this.hdPath}/${index}`
+    return this._isLedgerLiveHdPath() ? `m/44'/60'/${index}'/0/0` : `${this.hdPath}/${index}`
   }
 
   _isLedgerLiveHdPath () {
-    return this.hdPath === `m/44'/5718350'/0'/0/0`
+    return this.hdPath === `m/44'/60'/0'/0/0`
   }
 
   _toLedgerPath (path) {
