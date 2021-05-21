@@ -98,14 +98,15 @@ class LedgerBridgeKeyring extends EventEmitter {
 
   setHdPath (hdPath) {
     // Reset HDKey if the path changes
-    if (this.hdPath !== hdPath) {
+    if (this.hdPath !== hdPath || this.unlockAccountPath !== hdPath) {
       this.hdk = new HDKey()
     }
     this.hdPath = hdPath
+    this.unlockAccountPath = hdPath
   }
 
   unlock (hdPath) {
-    if (this.isUnlocked() && !hdPath) {
+    if (this.isUnlocked() && !hdPath && this.unlockAccountPath === this.hdPath) {
       return Promise.resolve('already unlocked')
     }
     const path = hdPath ? this._toLedgerPath(hdPath) : this.hdPath
@@ -118,6 +119,9 @@ class LedgerBridgeKeyring extends EventEmitter {
       },
       ({ success, payload }) => {
         if (success) {
+          if (hdPath) {
+            this.unlockAccountPath = hdPath
+          }
           this.hdk.publicKey = Buffer.from(payload.publicKey, 'hex')
           this.hdk.chainCode = Buffer.from(payload.chainCode, 'hex')
           resolve(payload.address)
