@@ -30,6 +30,8 @@ class LedgerBridgeKeyring extends EventEmitter {
     this.network = 'mainnet'
     this.implementFullBIP44 = false
     this.deserialize(opts)
+
+    this.iframeLoaded = false
     this._setupIframe()
   }
 
@@ -192,6 +194,32 @@ class LedgerBridgeKeyring extends EventEmitter {
     delete this.accountDetails[ethUtil.toChecksumAddress(address)]
   }
 
+  updateTransportMethod (useLedgerLive = false) {
+    return new Promise((resolve, reject) => {
+      // If the iframe isn't loaded yet, let's store the desired useLedgerLive value and
+      // optimistically return a successful promise
+      if (!this.iframeLoaded) {
+        this.delayedPromise = {
+          resolve,
+          reject,
+          useLedgerLive,
+        }
+        return
+      }
+
+      this._sendMessage({
+        action: 'ledger-update-transport',
+        params: { useLedgerLive },
+      }, ({ success }) => {
+        if (success) {
+          resolve(true)
+        } else {
+          reject(new Error('Ledger transport could not be updated'))
+        }
+      })
+    })
+  }
+
   // tx is an instance of the ethereumjs-transaction class.
   signTransaction (address, tx) {
     return new Promise((resolve, reject) => {
@@ -261,7 +289,7 @@ class LedgerBridgeKeyring extends EventEmitter {
               }
               resolve(signature)
             } else {
-              reject(new Error(payload.error || 'Ledger: Uknown error while signing message'))
+              reject(new Error(payload.error || 'Ledger: Unknown error while signing message'))
             }
           })
         })
@@ -285,8 +313,51 @@ class LedgerBridgeKeyring extends EventEmitter {
     return hdPath
   }
 
-  signTypedData () {
-    throw new Error('Not supported on this device')
+  async signTypedData (withAccount, data, options = {}) {
+    const isV4 = options.version === 'V4'
+    if (!isV4) {
+      throw new Error('Ledger: Only version 4 of typed data signing is supported')
+    }
+
+    const {
+      domain,
+      types,
+      primaryType,
+      message,
+    } = sigUtil.TypedDataUtils.sanitizeData(data)
+    const domainSeparatorHex = sigUtil.TypedDataUtils.hashStruct('EIP712Domain', domain, types, isV4).toString('hex')
+    const hashStructMessageHex = sigUtil.TypedDataUtils.hashStruct(primaryType, message, types, isV4).toString('hex')
+
+    const hdPath = await this.unlockAccountByAddress(withAccount)
+    const { success, payload } = await new Promise((resolve) => {
+      this._sendMessage({
+        action: 'ledger-sign-typed-data',
+        params: {
+          hdPath,
+          domainSeparatorHex,
+          hashStructMessageHex,
+        },
+      },
+      (result) => resolve(result))
+    })
+
+    if (success) {
+      let v = payload.v - 27
+      v = v.toString(16)
+      if (v.length < 2) {
+        v = `0${v}`
+      }
+      const signature = `0x${payload.r}${payload.s}${v}`
+      const addressSignedWith = sigUtil.recoverTypedSignature_v4({
+        data,
+        sig: signature,
+      })
+      if (ethUtil.toChecksumAddress(addressSignedWith) !== ethUtil.toChecksumAddress(withAccount)) {
+        throw new Error('Ledger: The signature doesnt match the right address')
+      }
+      return signature
+    }
+    throw new Error(payload.error || 'Ledger: Unknown error while signing message')
   }
 
   exportAccount () {
@@ -307,6 +378,23 @@ class LedgerBridgeKeyring extends EventEmitter {
   _setupIframe () {
     this.iframe = document.createElement('iframe')
     this.iframe.src = this.bridgeUrl
+    this.iframe.onload = async () => {
+      // If the ledger live preference was set before the iframe is loaded,
+      // set it after the iframe has loaded
+      this.iframeLoaded = true
+      if (this.delayedPromise) {
+        try {
+          const result = await this.updateTransportMethod(
+            this.delayedPromise.useLedgerLive,
+          )
+          this.delayedPromise.resolve(result)
+        } catch (e) {
+          this.delayedPromise.reject(e)
+        } finally {
+          delete this.delayedPromise
+        }
+      }
+    }
     document.head.appendChild(this.iframe)
   }
 
@@ -323,10 +411,12 @@ class LedgerBridgeKeyring extends EventEmitter {
       if (origin !== this._getOrigin()) {
         return false
       }
-      if (data && data.action && data.action === `${msg.action}-reply`) {
+
+      if (data && data.action && data.action === `${msg.action}-reply` && cb) {
         cb(data)
         return undefined
       }
+
       window.removeEventListener('message', eventListener)
       return undefined
     }
@@ -465,7 +555,7 @@ class LedgerBridgeKeyring extends EventEmitter {
   }
 
   _getApiUrl () {
-    return NETWORK_API_URLS[this.network] ? NETWORK_API_URLS[this.network] : NETWORK_API_URLS.mainnet
+    return NETWORK_API_URLS[this.network] || NETWORK_API_URLS.mainnet
   }
 
 }
