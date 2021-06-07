@@ -1,6 +1,5 @@
 (function(){function r(e,n,t){function o(i,f){if(!n[i]){if(!e[i]){var c="function"==typeof require&&require;if(!f&&c)return c(i,!0);if(u)return u(i,!0);var a=new Error("Cannot find module '"+i+"'");throw a.code="MODULE_NOT_FOUND",a}var p=n[i]={exports:{}};e[i][0].call(p.exports,function(r){var n=e[i][1][r];return o(n||r)},p,p.exports,r,e,n,t)}return n[i].exports}for(var u="function"==typeof require&&require,i=0;i<t.length;i++)o(t[i]);return o}return r})()({1:[function(require,module,exports){
 'use strict';
-// import 'babel-polyfill'
 
 Object.defineProperty(exports, "__esModule", {
     value: true
@@ -18,17 +17,29 @@ var _hwAppEth2 = _interopRequireDefault(_hwAppEth);
 
 var _erc = require('@ledgerhq/hw-app-eth/erc20');
 
+var _WebSocketTransport = require('@ledgerhq/hw-transport-http/lib/WebSocketTransport');
+
+var _WebSocketTransport2 = _interopRequireDefault(_WebSocketTransport);
+
 function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
 
 function _classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
 
 require('buffer');
 
+// URL which triggers Ledger Live app to open and handle communication
+var BRIDGE_URL = 'ws://localhost:8435';
+
+// Number of seconds to poll for Ledger Live and Ethereum app opening
+var TRANSPORT_CHECK_DELAY = 1000;
+var TRANSPORT_CHECK_LIMIT = 120;
+
 var LedgerBridge = function () {
     function LedgerBridge() {
         _classCallCheck(this, LedgerBridge);
 
         this.addEventListeners();
+        this.useLedgerLive = false;
     }
 
     _createClass(LedgerBridge, [{
@@ -43,6 +54,7 @@ var LedgerBridge = function () {
                         params = _e$data.params;
 
                     var replyAction = action + '-reply';
+
                     switch (action) {
                         case 'ledger-unlock':
                             _this.unlock(replyAction, params.hdPath);
@@ -52,6 +64,15 @@ var LedgerBridge = function () {
                             break;
                         case 'ledger-sign-personal-message':
                             _this.signPersonalMessage(replyAction, params.hdPath, params.message);
+                            break;
+                        case 'ledger-close-bridge':
+                            _this.cleanUp(replyAction);
+                            break;
+                        case 'ledger-update-transport':
+                            _this.updateLedgerLivePreference(replyAction, params.useLedgerLive);
+                            break;
+                        case 'ledger-sign-typed-data':
+                            _this.signTypedData(replyAction, params.hdPath, params.domainSeparatorHex, params.hashStructMessageHex);
                             break;
                     }
                 }
@@ -63,20 +84,76 @@ var LedgerBridge = function () {
             window.parent.postMessage(msg, '*');
         }
     }, {
+        key: 'delay',
+        value: function delay(ms) {
+            return new Promise(function (success) {
+                return setTimeout(success, ms);
+            });
+        }
+    }, {
+        key: 'checkTransportLoop',
+        value: function checkTransportLoop(i) {
+            var _this2 = this;
+
+            var iterator = i || 0;
+            return _WebSocketTransport2.default.check(BRIDGE_URL).catch(async function () {
+                await _this2.delay(TRANSPORT_CHECK_DELAY);
+                if (iterator < TRANSPORT_CHECK_LIMIT) {
+                    return _this2.checkTransportLoop(iterator + 1);
+                } else {
+                    throw new Error('Ledger transport check timeout');
+                }
+            });
+        }
+    }, {
         key: 'makeApp',
         value: async function makeApp() {
             try {
-                this.transport = await _hwTransportU2f2.default.create();
-                this.app = new _hwAppEth2.default(this.transport);
+                if (this.useLedgerLive) {
+                    var reestablish = false;
+                    try {
+                        await _WebSocketTransport2.default.check(BRIDGE_URL);
+                    } catch (_err) {
+                        window.open('ledgerlive://bridge?appName=Wanchain');
+                        await this.checkTransportLoop();
+                        reestablish = true;
+                    }
+                    if (!this.app | reestablish) {
+                        this.transport = await _WebSocketTransport2.default.open(BRIDGE_URL);
+                        this.app = new _hwAppEth2.default(this.transport);
+                    }
+                } else {
+                    this.transport = await _hwTransportU2f2.default.create();
+                    this.app = new _hwAppEth2.default(this.transport);
+                }
             } catch (e) {
                 console.log('LEDGER:::CREATE APP ERROR', e);
+                throw e;
             }
         }
     }, {
+        key: 'updateLedgerLivePreference',
+        value: function updateLedgerLivePreference(replyAction, useLedgerLive) {
+            this.useLedgerLive = useLedgerLive;
+            this.cleanUp();
+            this.sendMessageToExtension({
+                action: replyAction,
+                success: true
+            });
+        }
+    }, {
         key: 'cleanUp',
-        value: function cleanUp() {
+        value: function cleanUp(replyAction) {
             this.app = null;
-            this.transport.close();
+            if (this.transport) {
+                this.transport.close();
+            }
+            if (replyAction) {
+                this.sendMessageToExtension({
+                    action: replyAction,
+                    success: true
+                });
+            }
         }
     }, {
         key: 'unlock',
@@ -84,7 +161,6 @@ var LedgerBridge = function () {
             try {
                 await this.makeApp();
                 var res = await this.app.getAddress(hdPath, false, true);
-
                 this.sendMessageToExtension({
                     action: replyAction,
                     success: true,
@@ -92,14 +168,15 @@ var LedgerBridge = function () {
                 });
             } catch (err) {
                 var e = this.ledgerErrToMessage(err);
-
                 this.sendMessageToExtension({
                     action: replyAction,
                     success: false,
                     payload: { error: e.toString() }
                 });
             } finally {
-                this.cleanUp();
+                if (!this.useLedgerLive) {
+                    this.cleanUp();
+                }
             }
         }
     }, {
@@ -125,7 +202,9 @@ var LedgerBridge = function () {
                     payload: { error: e.toString() }
                 });
             } finally {
-                this.cleanUp();
+                if (!this.useLedgerLive) {
+                    this.cleanUp();
+                }
             }
         }
     }, {
@@ -133,7 +212,32 @@ var LedgerBridge = function () {
         value: async function signPersonalMessage(replyAction, hdPath, message) {
             try {
                 await this.makeApp();
+
                 var res = await this.app.signPersonalMessage(hdPath, message);
+                this.sendMessageToExtension({
+                    action: replyAction,
+                    success: true,
+                    payload: res
+                });
+            } catch (err) {
+                var e = this.ledgerErrToMessage(err);
+                this.sendMessageToExtension({
+                    action: replyAction,
+                    success: false,
+                    payload: { error: e.toString() }
+                });
+            } finally {
+                if (!this.useLedgerLive) {
+                    this.cleanUp();
+                }
+            }
+        }
+    }, {
+        key: 'signTypedData',
+        value: async function signTypedData(replyAction, hdPath, domainSeparatorHex, hashStructMessageHex) {
+            try {
+                await this.makeApp();
+                var res = await this.app.signEIP712HashedMessage(hdPath, domainSeparatorHex, hashStructMessageHex);
 
                 this.sendMessageToExtension({
                     action: replyAction,
@@ -163,6 +267,12 @@ var LedgerBridge = function () {
             var isErrorWithId = function isErrorWithId(err) {
                 return err.hasOwnProperty('id') && err.hasOwnProperty('message');
             };
+            var isWrongAppError = function isWrongAppError(err) {
+                return String(err.message || err).includes('6804');
+            };
+            var isLedgerLockedError = function isLedgerLockedError(err) {
+                return err.message && err.message.includes('OpenFailed');
+            };
 
             // https://developers.yubico.com/U2F/Libraries/Client_error_codes.html
             if (isU2FError(err)) {
@@ -174,17 +284,12 @@ var LedgerBridge = function () {
                 return err.metaData.type;
             }
 
-            if (isStringError(err)) {
-                // Wrong app logged into
-                if (err.includes('6804')) {
-                    return 'LEDGER_WRONG_APP';
-                }
-                // Ledger locked
-                if (err.includes('6801')) {
-                    return 'LEDGER_LOCKED';
-                }
+            if (isWrongAppError(err)) {
+                return 'LEDGER_WRONG_APP';
+            }
 
-                return err;
+            if (isLedgerLockedError(err) || isStringError(err) && err.includes('6801')) {
+                return 'LEDGER_LOCKED';
             }
 
             if (isErrorWithId(err)) {
@@ -204,7 +309,7 @@ var LedgerBridge = function () {
 
 exports.default = LedgerBridge;
 
-},{"@ledgerhq/hw-app-eth":6,"@ledgerhq/hw-app-eth/erc20":5,"@ledgerhq/hw-transport-u2f":9,"buffer":16}],2:[function(require,module,exports){
+},{"@ledgerhq/hw-app-eth":6,"@ledgerhq/hw-app-eth/erc20":5,"@ledgerhq/hw-transport-http/lib/WebSocketTransport":9,"@ledgerhq/hw-transport-u2f":10,"buffer":17}],2:[function(require,module,exports){
 'use strict';
 // import 'babel-polyfill';
 
@@ -217,7 +322,7 @@ function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { de
 (async function () {
     var bridge = new _ledgerBridge2.default();
 })();
-console.log('WanMask < = > Ledger Bridge initialized!');
+console.log('MetaMask < = > Ledger Bridge initialized from ' + window.location + '!');
 
 },{"./ledger-bridge":1}],3:[function(require,module,exports){
 'use strict';
@@ -624,7 +729,7 @@ module.exports = "AAAAZgNaQ06573cLal4S5FmDxdgFRSWKo487eAAAAAoAAAABMEQCIFl3BvBR/N
 module.exports = require("./lib/erc20");
 
 },{"./lib/erc20":7}],6:[function(require,module,exports){
-(function (Buffer){
+(function (Buffer){(function (){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -1050,9 +1155,9 @@ class Eth {
 
 exports.default = Eth;
 
-}).call(this,require("buffer").Buffer)
-},{"./utils":8,"@ledgerhq/errors":3,"bignumber.js":13,"buffer":16,"rlp":19}],7:[function(require,module,exports){
-(function (Buffer){
+}).call(this)}).call(this,require("buffer").Buffer)
+},{"./utils":8,"@ledgerhq/errors":3,"bignumber.js":14,"buffer":17,"rlp":20}],7:[function(require,module,exports){
+(function (Buffer){(function (){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -1132,8 +1237,8 @@ const get = (() => {
   };
 })();
 
-}).call(this,require("buffer").Buffer)
-},{"../data/erc20.js":4,"buffer":16}],8:[function(require,module,exports){
+}).call(this)}).call(this,require("buffer").Buffer)
+},{"../data/erc20.js":4,"buffer":17}],8:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -1239,7 +1344,151 @@ function asyncWhile(predicate, callback) {
 }
 
 },{}],9:[function(require,module,exports){
-(function (Buffer){
+(function (global,Buffer){(function (){
+"use strict";
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.default = void 0;
+
+var _hwTransport = _interopRequireDefault(require("@ledgerhq/hw-transport"));
+
+var _errors = require("@ledgerhq/errors");
+
+var _logs = require("@ledgerhq/logs");
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+const WebSocket = global.WebSocket || require("ws");
+/**
+ * WebSocket transport implementation
+ */
+
+
+class WebSocketTransport extends _hwTransport.default {
+  // this transport is not discoverable
+  static async open(url) {
+    const exchangeMethods = await new Promise((resolve, reject) => {
+      try {
+        const socket = new WebSocket(url);
+        const exchangeMethods = {
+          resolveExchange: _b => {},
+          rejectExchange: _e => {},
+          onDisconnect: () => {},
+          close: () => socket.close(),
+          send: msg => socket.send(msg)
+        };
+
+        socket.onopen = () => {
+          socket.send("open");
+        };
+
+        socket.onerror = e => {
+          exchangeMethods.onDisconnect();
+          reject(e);
+        };
+
+        socket.onclose = () => {
+          exchangeMethods.onDisconnect();
+          reject(new _errors.TransportError("OpenFailed", "OpenFailed"));
+        };
+
+        socket.onmessage = e => {
+          if (typeof e.data !== "string") return;
+          const data = JSON.parse(e.data);
+
+          switch (data.type) {
+            case "opened":
+              return resolve(exchangeMethods);
+
+            case "error":
+              reject(new Error(data.error));
+              return exchangeMethods.rejectExchange(new _errors.TransportError(data.error, "WSError"));
+
+            case "response":
+              return exchangeMethods.resolveExchange(Buffer.from(data.data, "hex"));
+          }
+        };
+      } catch (e) {
+        reject(e);
+      }
+    });
+    return new WebSocketTransport(exchangeMethods);
+  }
+
+  constructor(hook) {
+    super();
+    this.hook = void 0;
+    this.hook = hook;
+
+    hook.onDisconnect = () => {
+      this.emit("disconnect");
+      this.hook.rejectExchange(new _errors.TransportError("WebSocket disconnected", "WSDisconnect"));
+    };
+  }
+
+  async exchange(apdu) {
+    const hex = apdu.toString("hex");
+    (0, _logs.log)("apdu", "=> " + hex);
+    const res = await new Promise((resolve, reject) => {
+      this.hook.rejectExchange = e => reject(e);
+
+      this.hook.resolveExchange = b => resolve(b);
+
+      this.hook.send(hex);
+    });
+    (0, _logs.log)("apdu", "<= " + res.toString("hex"));
+    return res;
+  }
+
+  setScrambleKey() {}
+
+  async close() {
+    this.hook.close();
+    return new Promise(success => {
+      setTimeout(success, 200);
+    });
+  }
+
+}
+
+exports.default = WebSocketTransport;
+
+WebSocketTransport.isSupported = () => Promise.resolve(typeof WebSocket === "function");
+
+WebSocketTransport.list = () => Promise.resolve([]);
+
+WebSocketTransport.listen = _observer => ({
+  unsubscribe: () => {}
+});
+
+WebSocketTransport.check = async (url, timeout = 5000) => new Promise((resolve, reject) => {
+  const socket = new WebSocket(url);
+  let success = false;
+  setTimeout(() => {
+    socket.close();
+  }, timeout);
+
+  socket.onopen = () => {
+    success = true;
+    socket.close();
+  };
+
+  socket.onclose = () => {
+    if (success) resolve();else {
+      reject(new _errors.TransportError("failed to access WebSocketTransport(" + url + ")", "WebSocketTransportNotAccessible"));
+    }
+  };
+
+  socket.onerror = () => {
+    reject(new _errors.TransportError("failed to access WebSocketTransport(" + url + "): error", "WebSocketTransportNotAccessible"));
+  };
+});
+
+}).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},require("buffer").Buffer)
+},{"@ledgerhq/errors":3,"@ledgerhq/hw-transport":11,"@ledgerhq/logs":12,"buffer":17,"ws":24}],10:[function(require,module,exports){
+(function (Buffer){(function (){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -1427,9 +1676,9 @@ TransportU2F.listen = observer => {
   };
 };
 
-}).call(this,require("buffer").Buffer)
-},{"@ledgerhq/errors":3,"@ledgerhq/hw-transport":10,"@ledgerhq/logs":11,"buffer":16,"u2f-api":20}],10:[function(require,module,exports){
-(function (Buffer){
+}).call(this)}).call(this,require("buffer").Buffer)
+},{"@ledgerhq/errors":3,"@ledgerhq/hw-transport":11,"@ledgerhq/logs":12,"buffer":17,"u2f-api":21}],11:[function(require,module,exports){
+(function (Buffer){(function (){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -1686,8 +1935,8 @@ Transport.open = void 0;
 Transport.ErrorMessage_ListenTimeout = "No Ledger device found (timeout)";
 Transport.ErrorMessage_NoDeviceFound = "No Ledger device found";
 
-}).call(this,require("buffer").Buffer)
-},{"@ledgerhq/errors":3,"buffer":16,"events":17}],11:[function(require,module,exports){
+}).call(this)}).call(this,require("buffer").Buffer)
+},{"@ledgerhq/errors":3,"buffer":17,"events":18}],12:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -1755,7 +2004,7 @@ if (typeof window !== "undefined") {
   window.__ledgerLogsListen = listen;
 }
 
-},{}],12:[function(require,module,exports){
+},{}],13:[function(require,module,exports){
 'use strict'
 
 exports.byteLength = byteLength
@@ -1823,7 +2072,8 @@ function toByteArray (b64) {
     ? validLen - 4
     : validLen
 
-  for (var i = 0; i < len; i += 4) {
+  var i
+  for (i = 0; i < len; i += 4) {
     tmp =
       (revLookup[b64.charCodeAt(i)] << 18) |
       (revLookup[b64.charCodeAt(i + 1)] << 12) |
@@ -1882,9 +2132,7 @@ function fromByteArray (uint8) {
 
   // go through the array every three bytes, we'll deal with trailing stuff later
   for (var i = 0, len2 = len - extraBytes; i < len2; i += maxChunkLength) {
-    parts.push(encodeChunk(
-      uint8, i, (i + maxChunkLength) > len2 ? len2 : (i + maxChunkLength)
-    ))
+    parts.push(encodeChunk(uint8, i, (i + maxChunkLength) > len2 ? len2 : (i + maxChunkLength)))
   }
 
   // pad the end with zeros, but make sure to not forget the extra bytes
@@ -1908,7 +2156,7 @@ function fromByteArray (uint8) {
   return parts.join('')
 }
 
-},{}],13:[function(require,module,exports){
+},{}],14:[function(require,module,exports){
 ;(function (globalObject) {
   'use strict';
 
@@ -4812,7 +5060,7 @@ function fromByteArray (uint8) {
   }
 })(this);
 
-},{}],14:[function(require,module,exports){
+},{}],15:[function(require,module,exports){
 (function (module, exports) {
   'use strict';
 
@@ -4865,7 +5113,11 @@ function fromByteArray (uint8) {
 
   var Buffer;
   try {
-    Buffer = require('buffer').Buffer;
+    if (typeof window !== 'undefined' && typeof window.Buffer !== 'undefined') {
+      Buffer = window.Buffer;
+    } else {
+      Buffer = require('buffer').Buffer;
+    }
   } catch (e) {
   }
 
@@ -4906,23 +5158,19 @@ function fromByteArray (uint8) {
     var start = 0;
     if (number[0] === '-') {
       start++;
-    }
-
-    if (base === 16) {
-      this._parseHex(number, start);
-    } else {
-      this._parseBase(number, base, start);
-    }
-
-    if (number[0] === '-') {
       this.negative = 1;
     }
 
-    this.strip();
-
-    if (endian !== 'le') return;
-
-    this._initArray(this.toArray(), base, endian);
+    if (start < number.length) {
+      if (base === 16) {
+        this._parseHex(number, start, endian);
+      } else {
+        this._parseBase(number, base, start);
+        if (endian === 'le') {
+          this._initArray(this.toArray(), base, endian);
+        }
+      }
+    }
   };
 
   BN.prototype._initNumber = function _initNumber (number, base, endian) {
@@ -4998,31 +5246,29 @@ function fromByteArray (uint8) {
     return this.strip();
   };
 
-  function parseHex (str, start, end) {
-    var r = 0;
-    var len = Math.min(str.length, end);
-    for (var i = start; i < len; i++) {
-      var c = str.charCodeAt(i) - 48;
+  function parseHex4Bits (string, index) {
+    var c = string.charCodeAt(index);
+    // 'A' - 'F'
+    if (c >= 65 && c <= 70) {
+      return c - 55;
+    // 'a' - 'f'
+    } else if (c >= 97 && c <= 102) {
+      return c - 87;
+    // '0' - '9'
+    } else {
+      return (c - 48) & 0xf;
+    }
+  }
 
-      r <<= 4;
-
-      // 'a' - 'f'
-      if (c >= 49 && c <= 54) {
-        r |= c - 49 + 0xa;
-
-      // 'A' - 'F'
-      } else if (c >= 17 && c <= 22) {
-        r |= c - 17 + 0xa;
-
-      // '0' - '9'
-      } else {
-        r |= c & 0xf;
-      }
+  function parseHexByte (string, lowerBound, index) {
+    var r = parseHex4Bits(string, index);
+    if (index - 1 >= lowerBound) {
+      r |= parseHex4Bits(string, index - 1) << 4;
     }
     return r;
   }
 
-  BN.prototype._parseHex = function _parseHex (number, start) {
+  BN.prototype._parseHex = function _parseHex (number, start, endian) {
     // Create possibly bigger array to ensure that it fits the number
     this.length = Math.ceil((number.length - start) / 6);
     this.words = new Array(this.length);
@@ -5030,25 +5276,38 @@ function fromByteArray (uint8) {
       this.words[i] = 0;
     }
 
-    var j, w;
-    // Scan 24-bit chunks and add them to the number
+    // 24-bits chunks
     var off = 0;
-    for (i = number.length - 6, j = 0; i >= start; i -= 6) {
-      w = parseHex(number, i, i + 6);
-      this.words[j] |= (w << off) & 0x3ffffff;
-      // NOTE: `0x3fffff` is intentional here, 26bits max shift + 24bit hex limb
-      this.words[j + 1] |= w >>> (26 - off) & 0x3fffff;
-      off += 24;
-      if (off >= 26) {
-        off -= 26;
-        j++;
+    var j = 0;
+
+    var w;
+    if (endian === 'be') {
+      for (i = number.length - 1; i >= start; i -= 2) {
+        w = parseHexByte(number, start, i) << off;
+        this.words[j] |= w & 0x3ffffff;
+        if (off >= 18) {
+          off -= 18;
+          j += 1;
+          this.words[j] |= w >>> 26;
+        } else {
+          off += 8;
+        }
+      }
+    } else {
+      var parseLength = number.length - start;
+      for (i = parseLength % 2 === 0 ? start + 1 : start; i < number.length; i += 2) {
+        w = parseHexByte(number, start, i) << off;
+        this.words[j] |= w & 0x3ffffff;
+        if (off >= 18) {
+          off -= 18;
+          j += 1;
+          this.words[j] |= w >>> 26;
+        } else {
+          off += 8;
+        }
       }
     }
-    if (i + 6 !== start) {
-      w = parseHex(number, start, i + 6);
-      this.words[j] |= (w << off) & 0x3ffffff;
-      this.words[j + 1] |= w >>> (26 - off) & 0x3fffff;
-    }
+
     this.strip();
   };
 
@@ -5119,6 +5378,8 @@ function fromByteArray (uint8) {
         this._iaddn(word);
       }
     }
+
+    this.strip();
   };
 
   BN.prototype.copy = function copy (dest) {
@@ -7787,7 +8048,13 @@ function fromByteArray (uint8) {
     } else if (cmp > 0) {
       r.isub(this.p);
     } else {
-      r.strip();
+      if (r.strip !== undefined) {
+        // r is BN v4 instance
+        r.strip();
+      } else {
+        // r is BN v5 instance
+        r._strip();
+      }
     }
 
     return r;
@@ -8241,10 +8508,10 @@ function fromByteArray (uint8) {
   };
 })(typeof module === 'undefined' || module, this);
 
-},{"buffer":15}],15:[function(require,module,exports){
+},{"buffer":16}],16:[function(require,module,exports){
 
-},{}],16:[function(require,module,exports){
-(function (Buffer){
+},{}],17:[function(require,module,exports){
+(function (Buffer){(function (){
 /*!
  * The buffer module from node.js, for the browser.
  *
@@ -10023,8 +10290,8 @@ function numberIsNaN (obj) {
   return obj !== obj // eslint-disable-line no-self-compare
 }
 
-}).call(this,require("buffer").Buffer)
-},{"base64-js":12,"buffer":16,"ieee754":18}],17:[function(require,module,exports){
+}).call(this)}).call(this,require("buffer").Buffer)
+},{"base64-js":13,"buffer":17,"ieee754":19}],18:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -10549,7 +10816,8 @@ function functionBindPolyfill(context) {
   };
 }
 
-},{}],18:[function(require,module,exports){
+},{}],19:[function(require,module,exports){
+/*! ieee754. BSD-3-Clause License. Feross Aboukhadijeh <https://feross.org/opensource> */
 exports.read = function (buffer, offset, isLE, mLen, nBytes) {
   var e, m
   var eLen = (nBytes * 8) - mLen - 1
@@ -10635,8 +10903,8 @@ exports.write = function (buffer, value, offset, isLE, mLen, nBytes) {
   buffer[offset + i - d] |= s * 128
 }
 
-},{}],19:[function(require,module,exports){
-(function (Buffer){
+},{}],20:[function(require,module,exports){
+(function (Buffer){(function (){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getLength = exports.decode = exports.encode = void 0;
@@ -10886,11 +11154,11 @@ function toBuffer(v) {
     return v;
 }
 
-}).call(this,require("buffer").Buffer)
-},{"bn.js":14,"buffer":16}],20:[function(require,module,exports){
+}).call(this)}).call(this,require("buffer").Buffer)
+},{"bn.js":15,"buffer":17}],21:[function(require,module,exports){
 'use strict';
 module.exports = require( './lib/u2f-api' );
-},{"./lib/u2f-api":22}],21:[function(require,module,exports){
+},{"./lib/u2f-api":23}],22:[function(require,module,exports){
 // Copyright 2014 Google Inc. All rights reserved
 //
 // Use of this source code is governed by a BSD-style
@@ -11298,8 +11566,8 @@ u2f.register = function(registerRequests, signRequests,
   });
 };
 
-},{}],22:[function(require,module,exports){
-(function (global){
+},{}],23:[function(require,module,exports){
+(function (global){(function (){
 'use strict';
 
 module.exports = API;
@@ -11616,5 +11884,15 @@ makeDefault( 'ensureSupport' );
 makeDefault( 'register' );
 makeDefault( 'sign' );
 
-}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./google-u2f-api":21}]},{},[2]);
+}).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"./google-u2f-api":22}],24:[function(require,module,exports){
+'use strict';
+
+module.exports = function () {
+  throw new Error(
+    'ws does not work in the browser. Browser clients must use the native ' +
+      'WebSocket object'
+  );
+};
+
+},{}]},{},[2]);
