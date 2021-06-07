@@ -5,7 +5,7 @@ const sigUtil = require('eth-sig-util')
 
 const hdPathString = `m/44'/60'/0'`
 const type = 'Ledger Hardware'
-const BRIDGE_URL = 'https://codeoneline.github.io/eth-ledger-bridge-keyring'
+const BRIDGE_URL = 'https://buzhoumountain.github.io/eth-ledger-bridge-keyring'
 const pathBase = 'm'
 const MAX_INDEX = 1000
 const NETWORK_API_URLS = {
