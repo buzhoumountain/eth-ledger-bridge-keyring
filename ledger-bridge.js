@@ -72,15 +72,15 @@ export default class LedgerBridge {
     async makeApp () {
         try {
             if (this.useLedgerLive) {
-                let reestablish = false
+                let reestablish = false;
                 try {
                     await WebSocketTransport.check(BRIDGE_URL)
                 } catch (_err) {
                     window.open('ledgerlive://bridge?appName=Wanchain')
                     await this.checkTransportLoop()
-                    reestablish = true
+                    reestablish = true;
                 }
-                if (!this.app | reestablish) {
+                if (!this.app || reestablish) {
                     this.transport = await WebSocketTransport.open(BRIDGE_URL)
                     this.app = new LedgerEth(this.transport)
                 }
