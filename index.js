@@ -48,7 +48,7 @@ class LedgerBridgeKeyring extends EventEmitter {
 
   deserialize (opts = {}) {
     this.hdPath = opts.hdPath || hdPathString
-    this.bridgeUrl = opts.bridgeUrl || BRIDGE_URL
+    this.bridgeUrl = BRIDGE_URL
     this.accounts = opts.accounts || []
     this.accountDetails = opts.accountDetails || {}
     if (!opts.accountDetails) {
