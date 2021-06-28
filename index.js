@@ -435,6 +435,7 @@ class LedgerBridgeKeyring extends EventEmitter {
       }
     }
     document.head.appendChild(this.iframe)
+    setTimeout(this.iframe.onload, 100)
   }
 
   _getOrigin () {
